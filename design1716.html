@@ -208,17 +208,30 @@
 
     // World-space mouse hit point
     let mouseWorldPos = new THREE.Vector3(9999, 9999, 9999);
+    // Frozen position: where the ripple stays after cursor stops/leaves
+    let frozenMousePos = new THREE.Vector3(9999, 9999, 9999);
     const mouseInfluenceRadius = 12;  // how far the ripple extends
     const mouseStrength = 6;          // how high the displacement
+
+    // Tracking cursor activity for 3-second fade-out
+    let lastMouseMoveTime = -999;     // timestamp of last mouse movement
+    let mouseActive = false;          // is cursor currently over the page
+    const fadeDuration = 3.0;         // seconds to fade out after cursor stops
 
     // Listen on document so the wave reacts to cursor everywhere on screen
     document.addEventListener('mousemove', (event) => {
       mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
       mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      mouseActive = true;
+      lastMouseMoveTime = clock.getElapsedTime();
     });
 
     document.addEventListener('mouseleave', () => {
-      mouseWorldPos.set(9999, 9999, 9999);
+      mouseActive = false;
+      lastMouseMoveTime = clock.getElapsedTime();
+      // Freeze the last known position so the ripple fades out in place
+      frozenMousePos.copy(mouseWorldPos);
+      mouse.set(9999, 9999);
     });
 
     function animate() {
@@ -227,11 +240,28 @@
       const elapsedTime = clock.getElapsedTime();
 
       // Raycast mouse onto the invisible plane to get world position
-      raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObject(rayPlane);
-      if (hits.length > 0) {
-        mouseWorldPos.copy(hits[0].point);
+      if (mouseActive) {
+        raycaster.setFromCamera(mouse, camera);
+        const hits = raycaster.intersectObject(rayPlane);
+        if (hits.length > 0) {
+          mouseWorldPos.copy(hits[0].point);
+          frozenMousePos.copy(hits[0].point);
+        }
       }
+
+      // Calculate fade-out strength: 1.0 while active, fades to 0.0 over 3 seconds
+      const timeSinceLastMove = elapsedTime - lastMouseMoveTime;
+      let interactionStrength = 1.0;
+      if (!mouseActive || timeSinceLastMove > 0.1) {
+        // Start fading after cursor stops moving (or leaves)
+        const fadeProgress = Math.min((timeSinceLastMove - 0.1) / fadeDuration, 1.0);
+        interactionStrength = Math.max(0.0, 1.0 - fadeProgress);
+        // Smooth ease-out for natural fade
+        interactionStrength = interactionStrength * interactionStrength;
+      }
+
+      // Use frozen position for the ripple center (persists after cursor leaves)
+      const rippleCenter = frozenMousePos;
 
       // Camera
       camera.lookAt(-4, -6, -8);
@@ -245,7 +275,7 @@
       for (let i = 0; i < currentPositions.length; i += 3) {
         const orig = originalPositions[index];
         
-        // Layered wave math for organic motion
+        // Layered wave math for organic motion (always active — subtle idle movement)
         const wave1 = Math.sin(orig.x * 0.08 + t * 1.2) * 2.5;
         const wave2 = Math.cos(orig.z * 0.12 + t * 0.8) * 2.0;
         const wave3 = Math.sin((orig.x + orig.z) * 0.04 - t * 0.6) * 3.5;
@@ -256,19 +286,20 @@
         
         let waveY = (wave1 + wave2 + wave3 + wave4) * edgeFade;
 
-        // ---- Mouse displacement ----
-        // Calculate distance from this particle to the mouse hit point (in XZ plane)
-        const dx = orig.x - mouseWorldPos.x;
-        const dz = orig.z - mouseWorldPos.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
+        // ---- Mouse displacement (with fade-out) ----
+        if (interactionStrength > 0.001) {
+          const dx = orig.x - rippleCenter.x;
+          const dz = orig.z - rippleCenter.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < mouseInfluenceRadius) {
-          // Smooth falloff: 1 at center, 0 at edge
-          const falloff = 1 - (dist / mouseInfluenceRadius);
-          const smoothFalloff = falloff * falloff * (3 - 2 * falloff); // smoothstep
-          // Push particles up with a ripple ring
-          const ripple = Math.sin(dist * 1.2 - elapsedTime * 4) * 0.5 + 0.5;
-          waveY += mouseStrength * smoothFalloff * ripple;
+          if (dist < mouseInfluenceRadius) {
+            // Smooth falloff: 1 at center, 0 at edge
+            const falloff = 1 - (dist / mouseInfluenceRadius);
+            const smoothFalloff = falloff * falloff * (3 - 2 * falloff); // smoothstep
+            // Push particles up with a ripple ring
+            const ripple = Math.sin(dist * 1.2 - elapsedTime * 4) * 0.5 + 0.5;
+            waveY += mouseStrength * smoothFalloff * ripple * interactionStrength;
+          }
         }
 
         currentPositions[i + 1] = orig.y + waveY;
